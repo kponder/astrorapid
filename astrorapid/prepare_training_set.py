@@ -6,6 +6,7 @@ import multiprocessing as mp
 import numpy as np
 import copy
 from sklearn.utils import shuffle
+import itertools
 
 from astrorapid import helpers
 from astrorapid.get_training_data import get_data
@@ -20,7 +21,8 @@ class PrepareTrainingSetArrays(PrepareArrays):
     def __init__(self, passbands=('g', 'r'), contextual_info=('redshift',), nobs=50, mintime=-70, maxtime=80,
                  timestep=3.0, reread_data=False, bcut=True, zcut=None, ignore_classes=(), class_name_map=None,
                  nchunks=10000, training_set_dir='data/training_set_files', data_dir='data/ZTF_20190512/',
-                 save_dir='data/saved_light_curves/', get_data_func=None, augment_data=False, redo_processing=False):
+                 save_dir='data/saved_light_curves/', get_data_func=None, augment_data=False, redo_processing=False,
+                 **kwargs):
         PrepareArrays.__init__(self, passbands, contextual_info, nobs, mintime, maxtime, timestep)
         self.reread_data = reread_data
         self.redo_processing = redo_processing
@@ -34,24 +36,29 @@ class PrepareTrainingSetArrays(PrepareArrays):
         self.light_curves = {}
         self.get_data_func = get_data_func
         self.augment_data = augment_data
+        self.calculate_t0 = True
         if 'redshift' in contextual_info:
             self.known_redshift = True
         else:
             self.known_redshift = False
-        if class_name_map is None:
+        if kwargs['PLAsTiCC'] and class_name_map is None:
+            self.class_name_map = helpers.get_sntypes_PLAsTiCC()
+        elif class_name_map is None:
             self.class_name_map = helpers.get_sntypes()
         else:
             self.class_name_map = class_name_map
 
         if not os.path.exists(self.training_set_dir):
             os.makedirs(self.training_set_dir)
+        if kwargs['calculate_t0']:
+            self.calculate_t0 = kwargs['calculate_t0']
 
     def get_light_curves(self, class_nums=(1,), nprocesses=1):
         light_curves = {}
 
         for class_num in class_nums:
             lcs = get_data(self.get_data_func, class_num, self.data_dir, self.save_dir, self.passbands,
-                           self.known_redshift, nprocesses, self.reread_data)
+                           self.known_redshift, nprocesses, self.reread_data, self.calculate_t0)
             light_curves.update(lcs)
 
         return light_curves
@@ -130,7 +137,7 @@ class PrepareTrainingSetArrays(PrepareArrays):
         return augmented_light_curves
 
 
-    def prepare_training_set_arrays(self, otherchange='', class_nums=(1,), nprocesses=1, train_size=0.6):
+    def prepare_training_set_arrays(self, otherchange='', class_nums=(1,), nprocesses=1, train_size=0.6, **kwargs):
         savepath = os.path.join(self.training_set_dir,
                                 "X_{}ci{}_z{}_b{}_ig{}.npy".format(otherchange, self.contextual_info, self.zcut,
                                                                          self.bcut, self.ignore_classes))
@@ -291,22 +298,29 @@ class PrepareTrainingSetArrays(PrepareArrays):
         X = X.swapaxes(2, 1)
 
         # #NORMALISE
-        # X = X.copy()
-        # for i in range(len(X)):
-        #     for pbidx in range(2):
-        #         minX = X[i, :, pbidx].min(axis=0)
-        #         maxX = X[i, :, pbidx].max(axis=0)
-        #         X[i, :, pbidx] = (X[i, :, pbidx] - minX) / (maxX - minX)
-        #         # if (maxX - minX) != 0:
-        #         #     mask.append(i)
-        #         #     break
-        # finitemask = ~np.any(np.any(~np.isfinite(X), axis=1), axis=1)
-        # X = X[finitemask]
-        # y = y[finitemask]
-        # timesX = timesX[finitemask]
-        # objids_list = objids_list[finitemask]
-        # orig_lc = list(itertools.compress(orig_lc, finitemask))
-        # labels = labels[finitemask]
+        if kwargs['normalize']:
+            X = X.copy()
+            # KAP option
+            #minimum_lc = min(X[np.where(X > 0.)])
+            #maximum_lc = max(X[np.where(X > 0.)])
+            #X[np.where(X > 0.)] = (X[np.where(X > 0.)] - minimum_lc)/(maximum_lc - minimum_lc)
+            # Daniel Option
+            for i in range(len(X)):
+                for pbidx in range(len(self.passbands)):
+                    minX = X[i, :, pbidx].min(axis=0)
+                    maxX = X[i, :, pbidx].max(axis=0)
+                    if (maxX - minX) > 0:
+                        X[i, :, pbidx] = (X[i, :, pbidx] - minX) / (maxX - minX)
+                    # if (maxX - minX) != 0:
+                    #     mask.append(i)
+                    #     break
+            #finitemask = ~np.any(np.any(~np.isfinite(X), axis=1), axis=1)
+            #X = X[finitemask]
+            #y = y[finitemask]
+            #timesX = timesX[finitemask] ## timesX ismaybe bad
+            #objids_list = objids_list[finitemask]
+            #orig_lc = list(itertools.compress(orig_lc, finitemask))
+            #labels = labels[finitemask]
 
         print("Shuffling")
         X, y, labels, timesX, orig_lc, objids_list = shuffle(X, y, labels, timesX, orig_lc, objids_list)

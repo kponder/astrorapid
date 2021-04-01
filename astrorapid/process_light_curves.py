@@ -146,6 +146,8 @@ class InputLightCurve(object):
             if self.calculate_t0 is not False:
                 t0 = self.compute_t0(outlc)
                 outlc.meta['t0'] = t0
+            else:
+                outlc.meta['t0'] = self.trigger_mjd
             outlc.meta['peakmjd'] = self.peakmjd
             outlc.meta['class_num'] = self.class_number
 

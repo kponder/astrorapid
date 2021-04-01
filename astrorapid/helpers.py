@@ -94,3 +94,26 @@ def get_sntypes():
                    93: 'uLens - Point',
                    99: 'Rare'}
     return sntypes_map
+
+def get_sntypes_PLAsTiCC():
+    sntypes_map = {90: 'SNIa-norm',
+                   42: 'SNII',
+                   62: 'SNIbc',
+                   67: 'SNIa-91bg',
+                   52: 'SNIax',
+                   64: 'Kilonova',
+                   95: 'SLSN-I',
+                   994: 'PISN',
+                   992: 'ILOT',
+                   993: 'CART',
+                   15: 'TDE',
+                   88: 'AGN',
+                   92: 'RRLyrae',
+                   65: 'Mdwarf',
+                   16: 'EBE',
+                   53: 'Mira',
+                   991: 'uLens-BSR',
+                   6: 'uLens-1STAR',
+                   995: 'uLens-String',
+                   99: 'Rare'}
+    return sntypes_map

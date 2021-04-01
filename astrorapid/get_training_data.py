@@ -155,3 +155,75 @@ def get_real_ztf_training_data(class_name, data_dir='data/real_ZTF_data_from_osc
             pickle.dump(light_curves, fp)
 
     return light_curves
+
+def get_data_from_plasticc(class_num, data_dir='data/PLAsTiCC/',
+                           save_dir='data/saved_light_curves/',
+                           passbands=('u', 'g', 'r', 'i', 'z', 'Y'),
+                           known_redshift=True, nprocesses=1,
+                           redo=False, calculate_t0=True):
+    """
+
+    Get data from PLAsTiCC Zenodo files
+
+    """
+    from astropy.table import Table
+
+    save_lc_filepath = os.path.join(save_dir, "lc_plasticc.pickle")
+
+    if os.path.exists(save_lc_filepath) and not redo:
+        with open(save_lc_filepath, "rb") as fp:  # Unpickling
+            light_curves = pickle.load(fp)
+    else:
+        lc = Table.read(os.path.join(data_dir,'plasticc_train_lightcurves.csv.gz'), format='ascii')
+        meta =  Table.read(os.path.join(data_dir, 'plasticc_train_metadata.csv.gz'), format='ascii')
+
+        light_curves = {}
+
+        objids = np.unique(lc['object_id'])
+        lc['str_passband'] = ['u'] * len(lc)
+        lc['detected_bool'].name = 'photflag'
+
+        for objid in objids:
+            wh_lc, = np.where(lc['object_id'] == objid)
+            wh_meta, = np.where(meta['object_id'] == objid)
+
+            lcr = lc[wh_lc]
+
+            wh_detected = min(np.where(lcr['photflag'] == 1)[0])
+
+            lcr['photflag'][wh_detected] = 6144
+
+            wh_detected2, = np.where(lcr['photflag'] == 1)
+            lcr['photflag'][wh_detected2] = 4096
+
+            for ind, p in zip([1, 2, 3, 4, 5], ['g', 'r', 'i', 'z', 'Y']):
+                wh_p, = np.where(lcr['passband'] == ind)
+                lcr['str_passband'][wh_p] = p
+
+            peakflux = np.argmax(lcr['flux'])
+
+            if known_redshift:
+                redshift = meta['true_z'][wh_meta]
+            else:
+                redshift = None
+
+            inputlightcurve = InputLightCurve(
+                                            lcr['mjd'],
+                                            lcr['flux'], lcr['flux_err'],
+                                            lcr['str_passband'], lcr['photflag'],
+                                            meta['ra'][wh_meta], meta['decl'][wh_meta],
+                                            objid,
+                                            known_redshift=known_redshift,
+                                            calculate_t0=calculate_t0,
+                                            redshift=redshift,
+                                            mwebv=meta['mwebv'][wh_meta],
+                                            training_set_parameters={'class_number': int(meta['target'][wh_meta]),
+                                                                    'peakmjd': lcr['mjd'][peakflux],
+                                                                    },
+                                            )
+            light_curves[objid] = inputlightcurve.preprocess_light_curve()
+
+        with open(save_lc_filepath, "wb") as fp:  # Pickling
+            pickle.dump(light_curves, fp)
+
+    return light_curves
