@@ -1,6 +1,7 @@
 import tensorflow as tf
 import numpy as np
 import os
+import pickle
 
 # Positional Encoding
 def get_angles(pos, i, d_model):
@@ -430,7 +431,7 @@ def train_transformer(X_train, X_validation,
 
     Nf = X_train.shape[-1] # update to be based on input data
     target_size = Nf # target output size
-    lc_length = X_train.shape[1] -1 # read out of files
+    lc_length = X_train.shape[1] # read out of files
 
     # Determine the mask map
     pre_mask_map = np.ma.masked_values(X_train, 0)
@@ -439,7 +440,7 @@ def train_transformer(X_train, X_validation,
 
     pre_mask_map_validation = np.ma.masked_values(X_validation, 0)
     mask_map_validation = np.ones(np.shape(X_validation))
-    mask_map_validation[pre_mask_map.mask_validation] = 0.0
+    mask_map_validation[pre_mask_map_validation.mask] = 0.0
 
     # my function needs a dataset object to run through the generator. 
     ## weight map needs to be 1/variance
@@ -450,7 +451,7 @@ def train_transformer(X_train, X_validation,
     batch_ds_validation = dataset_validation.batch(batch_size)
 
     if embed:
-        assert d_model > target_size, 'If embedding, d_model > {Nf}'
+        assert d_model > target_size, f'If embedding, d_model > {Nf}'
 
     # Define the model
     encoder = Encoder(num_layers, d_model, num_heads, dff,
@@ -489,8 +490,7 @@ def train_transformer(X_train, X_validation,
                                  alpha=kld_alpha, kld_rho=kld_rho),
              }
     optimizer = tf.keras.optimizers.Adam(step_size)
-    loss_object = loss_dict[args.loss]
-    train_loss = tf.keras.metrics.Mean(name='train_loss')
+    loss_object = loss_dict[ae_loss]
 
 
     # Compile and run the Transformer model
@@ -501,7 +501,7 @@ def train_transformer(X_train, X_validation,
         num_batches = batch
     
     val_batches = 0
-    for (batch, _) in enumerate(batch_ds_val):
+    for (batch, _) in enumerate(batch_ds_validation):
         val_batches = batch
 
     def generator(data_set):
@@ -509,11 +509,12 @@ def train_transformer(X_train, X_validation,
             for in_batch, tar_batch, mask_batch, wgt_batch in data_set:
                 yield ( [in_batch , tar_batch[:, :-1, :],  mask_batch[:, 1:, :], wgt_batch] , tar_batch[:, 1:, :])
 
-    history = transformer.fit(x = generator(batch_ds),
-                        validation_data = generator(val_dataset),
+
+    history = transformer.fit_generator(generator(batch_ds),
+                        validation_data = generator(batch_ds_validation),
                         epochs=epochs,
                         steps_per_epoch=num_batches,
-                        validation_steps = val_batches,
+                        validation_steps=val_batches,
                         verbose=0,
                         )
 
@@ -527,28 +528,31 @@ def train_transformer(X_train, X_validation,
     if plot_loss:
         plot_history(history.history, fig_dir, transformer=True)
 
+    return transformer
 
 
 ## Neural Network for final classifier
-def classify_ffn(nclass, dff, rate=0.0):
+def classify_ffn(nclass, dff, rate=0.0, single_class=False):
     model = tf.keras.models.Sequential()
     model.add(tf.keras.layers.Dense(dff, activation='relu')) 
     model.add(tf.keras.layers.Dropout(rate))
     model.add(tf.keras.layers.Dense(dff, activation='relu'))
-    model.add(tf.keras.layers.GlobalMaxPool1D())
+    if single_class:
+        model.add(tf.keras.layers.GlobalMaxPool1D())
     model.add(tf.keras.layers.Dense(nclass, activation='softmax'))
     return model
 
-def train_classifier(X_train, X_wgtmap_train, 
-                    X_validation, X_wgtmap_validation,
+def train_classifier(X_train, X_wgtmap_train, X_norm_train,
+                    X_validation, X_wgtmap_validation, X_norm_validation,
                     y_train, y_validation,
-                    transformer_weights='default.hdf5',
+                    transformer_weights='transformer_model.hdf5',
                     sample_weights=None,
                     fig_dir='.', retrain=True,
                     epochs=25, dropout_rate=0.0, batch_size=64,
                     num_layers=8, d_model=6, dff=64, num_heads=6, embed=True,
                     step_size=0.0001,
                     classifier_loss='categorical_crossentropy',
+                    single_class=True,
                     plot_loss=True):
     """ Train FFN classifier and save model. 
     
@@ -596,15 +600,21 @@ def train_classifier(X_train, X_wgtmap_train,
     ## TBD: get data in right format and all the other inputs
     Nf = X_train.shape[-1] # update to be based on input data
     target_size = Nf # target output size
-    lc_length = X_train.shape[1] - 1 # read out of files
+    lc_length = X_train.shape[1] # read out of files
 
-    num_class = y_test.shape[-1]
+    num_class = y_validation.shape[-1]
+
+    #y_train = np.mean(y_train, axis=1)
+    #y_validation = np.mean(y_validation, axis=1)
+
+    X_norm_train = np.reshape([l*lc_length for l in X_norm_train], (len(X_train), lc_length, 2))
+    X_norm_validation = np.reshape([l*lc_length for l in X_norm_validation], (len(X_validation), lc_length, 2))
 
     ## weight map needs to be 1/variance
-    dataset = tf.data.Dataset.from_tensor_slices((X_train, y_train, X_wgtmap_train))
+    dataset = tf.data.Dataset.from_tensor_slices((X_train, y_train, X_wgtmap_train, X_norm_train))
     batch_ds = dataset.batch(batch_size)
 
-    dataset_validation = tf.data.Dataset.from_tensor_slices((X_validation, y_validation, X_wgtmap_validation))
+    dataset_validation = tf.data.Dataset.from_tensor_slices((X_validation, y_validation, X_wgtmap_validation, X_norm_validation))
     batch_ds_validation = dataset_validation.batch(batch_size)
 
     ## Define the tranformer autoencoder
@@ -631,33 +641,35 @@ def train_classifier(X_train, X_wgtmap_train,
     x = tf.keras.layers.Multiply()([x, mask])
     transformer = tf.keras.models.Model(inputs=[inp, target, mask], outputs=x)
 
-    transformer.load_weights(transformer_weights)
+    transformer.load_weights(os.path.join(fig_dir, transformer_weights))
     
     ## Define the FFN Classifier
     if embed:
-        cl_inp = tf.keras.layers.Input(shape=(None, Nf))
+        cl_inp = tf.keras.layers.Input(shape=(None, Nf), name='classifier_input')
     else:
         cl_inp = tf.keras.layers.Input(shape=(None, None))
+    norm = tf.keras.layers.Input(shape=(None, 2), dtype=tf.float32)
 
     classify_encoder = Encoder(num_layers, d_model, num_heads, dff,
-                       lc_length, dropout_rate, embed=embed)
+                               lc_length, dropout_rate, embed=embed)
     classify_encoder(cl_inp)
     classify_encoder.set_weights(transformer.get_layer(name='encoder').get_weights())
 
     classify_encoder.trainable = False
 
-    class_ffn = classify_ffn(num_class, dff, rate=dropout_rate)
+    class_ffn = classify_ffn(num_class, dff, rate=dropout_rate, single_class=single_class)
 
     ## The model implemented
-    cl_x = classify_encoder(inp)
+    cl_x = classify_encoder(cl_inp)
+    # This layer concatenates the norm information.
+    cl_x = tf.keras.layers.Concatenate(axis=-1)([cl_x, norm])
+    # This is the final FFN
     cl_x = class_ffn(cl_x)
-    aeclass = tf.keras.models.Model(inputs=[cl_inp], outputs=cl_x)
+    aeclass = tf.keras.models.Model(inputs=[cl_inp, norm], outputs=cl_x)
 
-    # Optimizer and comple
+    # Optimizer and compile
     optimizer = tf.keras.optimizers.Adam(step_size)
-    loss_object = tf.keras.losses.CategoricalCrossentropy() 
-    train_loss = tf.keras.metrics.Mean(name='train_loss')
-    train_accuracy = tf.keras.metrics.CategoricalAccuracy(name='train_accuracy')
+    loss_object = tf.keras.losses.CategoricalCrossentropy()
 
     aeclass.compile(loss=loss_object,
                     optimizer=optimizer, 
@@ -669,69 +681,75 @@ def train_classifier(X_train, X_wgtmap_train,
         num_batches = batch
     
     val_batches = 0
-    for (batch, _) in enumerate(batch_ds_val):
+    for (batch, _) in enumerate(batch_ds_validation):
         val_batches = batch
 
     def generator(data_set):
         while True:
-            for in_batch, tar_batch, wgt_batch in data_set:
-                yield ( [in_batch, wgt_batch] , tar_batch)
+            for in_batch, tar_batch, wgt_batch, norm_batch in data_set:
+                yield ( [in_batch, norm_batch, wgt_batch] , tar_batch)
 
-    history = aeclass.fit(x = generator(batch_ds),
-                          validation_data = generator(batch_ds_VALID),
+    history = aeclass.fit_generator(generator(batch_ds),
+                          validation_data = generator(batch_ds_validation),
                           epochs=epochs,
                           steps_per_epoch = num_batches,
-                          validation_steps = num_batches_VALID,
+                          validation_steps=val_batches,
                          )
     
     print(aeclass.summary())
-    transformer_filename = os.path.join(fig_dir, "ffnclass_model.hdf5")
-    transformer.save(transformer_filename)
+    aeclass_filename = os.path.join(fig_dir, "ffnclass_model.hdf5")
+    aeclass.save(aeclass_filename)
 
-    with open(os.path.join(fig_dir, "aeclass_history.pickle"), 'wb') as fp:
+    with open(os.path.join(fig_dir, "ffnclass_history.pickle"), 'wb') as fp:
         pickle.dump(history.history, fp)
 
     if plot_loss:
         plot_history(history.history, fig_dir, transformer=False)
 
-def train_model(X_train, X_wgtmap_train, 
-                X_validation, X_wgtmap_validation,
+    return aeclass
+
+def train_model(X_train, X_wgtmap_train, X_norm_train,
+                X_validation, X_wgtmap_validation, X_norm_validation,
                 y_train, y_validation, 
                 label_train, label_validation,
                 fig_dir='.', retrain=True,
                 epochs=25, dropout_rate=0.0, batch_size=64,
                 num_layers=8, d_model=6, dff=64, num_heads=6, embed=True,
-                trainsformer_step_size=0.00001,
+                transformer_step_size=0.00001,
                 transformer_loss='KLD_RMSE', kld_alpha=0.3, kld_rho=1e-5,
                 classifier_loss='categorical_crossentropy', 
-                sample_weights=None, num_class=4,
+                sample_weights=None, #num_class=4,
                 classifier_step_size=0.0001,
+                single_class=True,
                 plot_loss=True):
 
     train_transformer(X_train, X_wgtmap_train, 
-                      X_validation, X_wgtmap_validation,
-                      y_train, y_validation, 
-                      fig_dir=fig_dir, retrain=retrain,
-                      epochs=epochs, dropout_rate=dropout_rate, batch_size=batch_size,
-                      num_layers=num_layers, d_model=d_model, dff=dff, num_heads=num_heads, embed=embed,
-                      step_size=transformer_step_size,
-                      ae_loss=transformer_loss, kld_alpha=kld_alpha, kld_rho=kld_rho,
-                      plot_loss=plot_loss)
+                                    X_validation, X_wgtmap_validation,
+                                    y_train, y_validation,
+                                    fig_dir=fig_dir, retrain=retrain,
+                                    epochs=epochs, dropout_rate=dropout_rate, batch_size=batch_size,
+                                    num_layers=num_layers, d_model=d_model, dff=dff, num_heads=num_heads, embed=embed,
+                                    step_size=transformer_step_size,
+                                    ae_loss=transformer_loss, kld_alpha=kld_alpha, kld_rho=kld_rho,
+                                    plot_loss=plot_loss)
+    tf.keras.backend.clear_session()
+    ffn_classifier = train_classifier(X_train, X_wgtmap_train, X_norm_train,
+                                      X_validation, X_wgtmap_validation, X_norm_validation,
+                                      y_train, y_validation,
+                                      label_train, label_validation,
+                                      transformer_weights=os.path.join(fig_dir, 'transformer_model.hdf5'),
+                                      sample_weights=sample_weights, #num_class=num_class,
+                                      fig_dir=fig_dir, retrain=retrain,
+                                      epochs=epochs, dropout_rate=dropout_rate, batch_size=batch_size,
+                                      num_layers=num_layers, d_model=d_model, dff=dff, num_heads=num_heads, embed=embed,
+                                      step_size=classifier_step_size,
+                                      classifier_loss=classifier_loss,
+                                      single_class=single_class,
+                                      plot_loss=plot_loss)
+    return ffn_classifier
 
-    train_classifier(X_train, X_wgtmap_train, 
-                    X_validation, X_wgtmap_validation,
-                    label_train, label_validation,
-                    transformer_weights=os.path.join(fig_dir, 'transformer_model.hdf5'),
-                    sample_weights=sample_weights, num_class=num_class,
-                    fig_dir=fig_dir, retrain=retrain,
-                    epochs=epochs, dropout_rate=dropout_rate, batch_size=batch_size,
-                    num_layers=num_layers, d_model=d_model, dff=dff, num_heads=num_heads, embed=embed,
-                    step_size=classifier_step_size,
-                    classifier_loss=classifier_loss,
-                    plot_loss=plot_loss)
-
-def train_EncoderFFNmodel(X_train, X_wgtmap_train, 
-                          X_validation, X_wgtmap_validation,
+def train_EncoderFFNmodel(X_train, X_wgtmap_train, X_norm_train,
+                          X_validation, X_wgtmap_validation, X_norm_validation,
                         y_train, y_validation, 
                         fig_dir='.', retrain=True,
                         epochs=25, dropout_rate=0.0, batch_size=64,
@@ -740,34 +758,40 @@ def train_EncoderFFNmodel(X_train, X_wgtmap_train,
                         sparse=True, kld_alpha=0.3, kld_rho=1e-5,
                         classifier_loss=tf.keras.losses.CategoricalCrossentropy(),
                         step_size=0.00001,
+                        single_class=True,
                         plot_loss=True):
 
     Nf = X_train.shape[-1] # update to be based on input data
-    target_size = Nf # target output size
-    lc_length = X_train.shape[1] -1 # read out of files
+    #target_size = Nf # target output size
+    lc_length = X_train.shape[1] # read out of files
 
-    num_class = y_test.shape[-1]
+    num_class = y_train.shape[-1]
 
-    dataset = tf.data.Dataset.from_tensor_slices((X_train, y_train, X_wgtmap_train))
+    X_norm_train = np.reshape([l*lc_length for l in X_norm_train], (len(X_train), lc_length, 2))
+    X_norm_validation = np.reshape([l*lc_length for l in X_norm_validation], (len(X_validation), lc_length, 2))
+
+    dataset = tf.data.Dataset.from_tensor_slices((X_train, y_train, X_wgtmap_train, X_norm_train))
     batch_ds = dataset.batch(batch_size)
 
-    dataset_validation = tf.data.Dataset.from_tensor_slices((X_validation, y_validation, X_wgtmap_validation))
+    dataset_validation = tf.data.Dataset.from_tensor_slices((X_validation, y_validation, X_wgtmap_validation, X_norm_validation))
     batch_ds_validation = dataset_validation.batch(batch_size)
 
     encoder = Encoder(num_layers, d_model, num_heads, dff,
                         lc_length, dropout_rate, embed=embed)
 
-    class_ffn = classify_ffn(num_classes, dff, rate=dropout_rate)
+    class_ffn = classify_ffn(num_class, dff, rate=dropout_rate, single_class=single_class)
 
     if embed:
         inp = tf.keras.layers.Input(shape=(None, Nf))
     else:
         inp = tf.keras.layers.Input(shape=(None, None))
+    norm = tf.keras.layers.Input(shape=(None, 2), dtype=tf.float32)
 
     x = encoder(inp)
+    x = tf.keras.layers.Concatenate(axis=-1)([x, norm])
     x = class_ffn(x)
 
-    model = tf.keras.models.Model(inputs=[inp], outputs=x)
+    model = tf.keras.models.Model(inputs=[inp, norm], outputs=x)
 
     if sparse:
         # Add KLD penalty for sparse light curves
@@ -775,8 +799,6 @@ def train_EncoderFFNmodel(X_train, X_wgtmap_train,
 
     optimizer = tf.keras.optimizers.Adam(step_size)
     loss_object = classifier_loss 
-    train_loss = tf.keras.metrics.Mean(name='train_loss')
-    train_accuracy = tf.keras.metrics.CategoricalAccuracy(name='train_accuracy')
 
     model.compile(loss=loss_object, 
                 optimizer=optimizer, 
@@ -787,23 +809,23 @@ def train_EncoderFFNmodel(X_train, X_wgtmap_train,
         num_batches = batch
     
     val_batches = 0
-    for (batch, _) in enumerate(batch_ds_val):
+    for (batch, _) in enumerate(batch_ds_validation):
         val_batches = batch
 
     def generator(data_set):
         while True:
-            for in_batch, tar_batch, wgt_batch in data_set:
-                yield ( [in_batch, wgt_batch] , tar_batch)
+            for in_batch, tar_batch, wgt_batch, norm_batch in data_set:
+                yield ( [in_batch, norm_batch, wgt_batch] , tar_batch)
 
-    history = model.fit(x = generator(batch_ds),
-                    validation_data = generator(batch_ds_VALID),
+    history = model.fit_generator(generator(batch_ds),
+                    validation_data = generator(batch_ds_validation),
                     epochs=epochs,
                     steps_per_epoch = num_batches,
-                    validation_steps = num_batches_VALID,
+                    validation_steps = val_batches,
                     )
     print(model.summary())
-    transformer_filename = os.path.join(fig_dir, "Encoder_ffnclass_model.hdf5")
-    transformer.save(transformer_filename)
+    enc_ffnclass_filename = os.path.join(fig_dir, "Encoder_ffnclass_model.hdf5")
+    model.save(enc_ffnclass_filename)
 
     with open(os.path.join(fig_dir, "encoder_ffn_history.pickle"), 'wb') as fp:
         pickle.dump(history.history, fp)
@@ -811,8 +833,11 @@ def train_EncoderFFNmodel(X_train, X_wgtmap_train,
     if plot_loss:
         plot_history(history.history, fig_dir, transformer=False)
 
+    return model
+
 
 def plot_history(history, fig_dir, transformer=False):
+    import matplotlib.pyplot as plt
     # Plot loss vs epochs
     plt.figure(figsize=(12,10))
     train_loss = history['loss']
