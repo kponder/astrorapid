@@ -22,6 +22,7 @@ class PrepareTrainingSetArrays(PrepareArrays):
                  timestep=3.0, reread_data=False, bcut=True, zcut=None, ignore_classes=(), class_name_map=None,
                  nchunks=10000, training_set_dir='data/training_set_files', data_dir='data/ZTF_20190512/',
                  save_dir='data/saved_light_curves/', get_data_func=None, augment_data=False, redo_processing=False,
+                 spline_interp=True,
                  **kwargs):
         PrepareArrays.__init__(self, passbands, contextual_info, nobs, mintime, maxtime, timestep)
         self.reread_data = reread_data
@@ -37,6 +38,7 @@ class PrepareTrainingSetArrays(PrepareArrays):
         self.get_data_func = get_data_func
         self.augment_data = augment_data
         self.calculate_t0 = True
+        self.spline_interp = spline_interp
         if 'redshift' in contextual_info:
             self.known_redshift = True
         else:
@@ -50,8 +52,12 @@ class PrepareTrainingSetArrays(PrepareArrays):
 
         if not os.path.exists(self.training_set_dir):
             os.makedirs(self.training_set_dir)
-        if kwargs['calculate_t0']:
+        if 'calculate_t0' in kwargs.keys():
             self.calculate_t0 = kwargs['calculate_t0']
+        if 'single_class' in kwargs.keys():
+            self.single_class = kwargs['single_class']
+        else:
+            self.single_class = False
 
     def get_light_curves(self, class_nums=(1,), nprocesses=1):
         light_curves = {}
@@ -159,10 +165,17 @@ class PrepareTrainingSetArrays(PrepareArrays):
 
             # Store data labels (y) and 'r' band data (X). Use memory mapping because input file is very large.
             labels = np.empty(shape=nobjects, dtype=object)
-            y = np.zeros(shape=(nobjects, self.nobs), dtype=object)
+            if self.single_class:
+                y = np.zeros(shape=(nobjects), dtype=object)
+            else:
+                y = np.zeros(shape=(nobjects, self.nobs), dtype=object)
             X = np.memmap(os.path.join(self.training_set_dir, 'X_lc_data.dat'), dtype=np.float32, mode='w+',
                           shape=(nobjects, self.nfeatures, self.nobs))  # 4+len(self.contextual_info), 100))
             X[:] = np.zeros(shape=(nobjects, self.nfeatures, self.nobs))
+
+            Xerr = np.memmap(os.path.join(self.training_set_dir, 'Xerr_lc_data.dat'), dtype=np.float32, mode='w+',
+                          shape=(nobjects, self.nfeatures, self.nobs))  # 4+len(self.contextual_info), 100))
+            Xerr[:] = np.zeros(shape=(nobjects, self.nfeatures, self.nobs))
             timesX = np.zeros(shape=(nobjects, self.nobs))
             objids_list = []
             orig_lc = []
@@ -184,14 +197,14 @@ class PrepareTrainingSetArrays(PrepareArrays):
 
             sum_deleterows = 0
             startidx = 0
-            num_outputs = len(outputs)
             print('combining results...')
             for i, output in enumerate(outputs):
-                labels_part, y_part, X_part, timesX_part, objids_list_part, orig_lc_part, num_deleterows_part, num_objects_part = output
+                labels_part, y_part, X_part, Xerr_part, timesX_part, objids_list_part, orig_lc_part, num_deleterows_part, num_objects_part = output
                 endidx = startidx + num_objects_part
                 labels[startidx:endidx] = labels_part
                 y[startidx:endidx] = y_part
                 X[startidx:endidx] = X_part
+                Xerr[startidx:endidx] = Xerr_part
                 timesX[startidx:endidx] = timesX_part
                 objids_list.extend(objids_list_part)
                 orig_lc.extend(orig_lc_part)
@@ -200,6 +213,7 @@ class PrepareTrainingSetArrays(PrepareArrays):
 
             deleterows = np.array(np.arange(nobjects - sum_deleterows, nobjects))
             X = np.delete(X, deleterows, axis=0)
+            Xerr = np.delete(Xerr, deleterows, axis=0)
             y = np.delete(y, deleterows, axis=0)
             labels = np.delete(labels, deleterows, axis=0)
             timesX = np.delete(timesX, deleterows, axis=0)
@@ -207,6 +221,9 @@ class PrepareTrainingSetArrays(PrepareArrays):
             np.save(os.path.join(self.training_set_dir,
                                  "X_{}ci{}_z{}_b{}_ig{}.npy".format(otherchange, self.contextual_info, self.zcut,
                                                                     self.bcut, self.ignore_classes)), X)
+            np.save(os.path.join(self.training_set_dir,
+                                 "Xerr_{}ci{}_z{}_b{}_ig{}.npy".format(otherchange, self.contextual_info, self.zcut,
+                                                                    self.bcut, self.ignore_classes)), Xerr)
             np.save(os.path.join(self.training_set_dir,
                                  "y_{}ci{}_z{}_b{}_ig{}.npy".format(otherchange, self.contextual_info, self.zcut,
                                                                     self.bcut, self.ignore_classes)), y,
@@ -241,6 +258,9 @@ class PrepareTrainingSetArrays(PrepareArrays):
         else:
             X = np.load(os.path.join(self.training_set_dir,
                                      "X_{}ci{}_z{}_b{}_ig{}.npy".format(otherchange, self.contextual_info, self.zcut,
+                                                                        self.bcut, self.ignore_classes)), mmap_mode='r')
+            Xerr = np.load(os.path.join(self.training_set_dir,
+                                     "Xerr_{}ci{}_z{}_b{}_ig{}.npy".format(otherchange, self.contextual_info, self.zcut,
                                                                         self.bcut, self.ignore_classes)), mmap_mode='r')
             y = np.load(os.path.join(self.training_set_dir,
                                      "y_{}ci{}_z{}_b{}_ig{}.npy".format(otherchange, self.contextual_info, self.zcut,
@@ -289,53 +309,34 @@ class PrepareTrainingSetArrays(PrepareArrays):
         # Use class numbers 1,2,3... instead of 1, 3, 13 etc.
         y_indexes = np.copy(y)
         for i, c in enumerate(classes):
-            y_indexes[y == c] = i + 1
+            y_indexes[y == c] = i
         y = y_indexes
+
+        if not self.single_class:
+            y = y + 1
 
         y = to_categorical(y)
 
         # Correct shape for keras is (N_objects, N_timesteps, N_passbands) (where N_timesteps is lookback time)
         X = X.swapaxes(2, 1)
-
-        # #NORMALISE
-        if kwargs['normalize']:
-            X = X.copy()
-            # KAP option
-            #minimum_lc = min(X[np.where(X > 0.)])
-            #maximum_lc = max(X[np.where(X > 0.)])
-            #X[np.where(X > 0.)] = (X[np.where(X > 0.)] - minimum_lc)/(maximum_lc - minimum_lc)
-            # Daniel Option
-            for i in range(len(X)):
-                for pbidx in range(len(self.passbands)):
-                    minX = X[i, :, pbidx].min(axis=0)
-                    maxX = X[i, :, pbidx].max(axis=0)
-                    if (maxX - minX) > 0:
-                        X[i, :, pbidx] = (X[i, :, pbidx] - minX) / (maxX - minX)
-                    # if (maxX - minX) != 0:
-                    #     mask.append(i)
-                    #     break
-            #finitemask = ~np.any(np.any(~np.isfinite(X), axis=1), axis=1)
-            #X = X[finitemask]
-            #y = y[finitemask]
-            #timesX = timesX[finitemask] ## timesX ismaybe bad
-            #objids_list = objids_list[finitemask]
-            #orig_lc = list(itertools.compress(orig_lc, finitemask))
-            #labels = labels[finitemask]
+        Xerr = Xerr.swapaxes(2, 1)
 
         print("Shuffling")
-        X, y, labels, timesX, orig_lc, objids_list = shuffle(X, y, labels, timesX, orig_lc, objids_list)
+        X, Xerr, y, labels, timesX, orig_lc, objids_list = shuffle(X, Xerr, y, labels, timesX, orig_lc, objids_list)
         print("Done shuffling")
         objids_list = np.array(objids_list)
 
         train_idxes = [i for i, objid in enumerate(objids_list) if objid in objids_train]
-        test_idxes = [i for i, objid in enumerate(objids_list) if objid in objids_test]
+        test_idxes =  [i for i, objid in enumerate(objids_list) if objid in objids_test]
         X_train = X[train_idxes]
+        Xerr_train = Xerr[train_idxes]
         y_train = y[train_idxes]
         labels_train = labels[train_idxes]
         timesX_train = timesX[train_idxes]
         orig_lc_train = [orig_lc[i] for i in train_idxes]
         objids_train = objids_list[train_idxes]
         X_test = X[test_idxes]
+        Xerr_test = Xerr[test_idxes]
         y_test = y[test_idxes]
         labels_test = labels[test_idxes]
         timesX_test = timesX[test_idxes]
@@ -346,8 +347,9 @@ class PrepareTrainingSetArrays(PrepareArrays):
         # orig_lc_test, objids_train, objids_test = train_test_split(
         #     X, y, labels, timesX, orig_lc, objids_list, train_size=train_size, shuffle=False, random_state=42)
 
-        def augment_crop_lightcurves(X_local, y_local, labels_local, timesX_local, orig_lc_local, objids_local):
+        def augment_crop_lightcurves(X_local, Xerr_local, y_local, labels_local, timesX_local, orig_lc_local, objids_local):
             X_local = copy.copy(X_local)
+            Xerr_local = copy.copy(Xerr_local)
             y_local = copy.copy(y_local)
             labels_local = copy.copy(labels_local)
             timesX_local = copy.copy(timesX_local)
@@ -355,6 +357,7 @@ class PrepareTrainingSetArrays(PrepareArrays):
             objids_local = copy.copy(objids_local)
 
             newX = np.zeros(X_local.shape)
+            newXerr = np.zeros(Xerr_local.shape)
             newy = np.zeros(y_local.shape)
             lenX = len(X_local)
             for i in range(lenX):
@@ -363,22 +366,58 @@ class PrepareTrainingSetArrays(PrepareArrays):
                 mask = timesX_local[i] >= 0
                 nmask = sum(mask)
                 newX[i][:nmask] = X_local[i][mask]
-                newy[i][:nmask] = y_local[i][mask]
+                newXerr[i][:nmask] = Xerr_local[i][mask]
+                if not self.single_class:
+                    newy[i][:nmask] = y_local[i][mask]
+                else:
+                    newy[i] = y_local[i]
 
             print("Concatenating")
             X_local = np.concatenate((X_local, newX))
+            Xerr_local = np.concatenate((Xerr_local, newXerr))
             y_local = np.concatenate((y_local, newy))
             labels_local = np.concatenate((labels_local, labels_local))
             timesX_local = np.concatenate((timesX_local, timesX_local))
             orig_lc_local = orig_lc_local * 2
             objids_local = np.concatenate((objids_local, objids_local))
 
-            return X_local, y_local, labels_local, timesX_local, orig_lc_local, objids_local
+            return X_local, Xerr_local, y_local, labels_local, timesX_local, orig_lc_local, objids_local
 
-        X_train, y_train, labels_train, timesX_train, orig_lc_train, objids_train = augment_crop_lightcurves(X_train, y_train, labels_train, timesX_train, orig_lc_train, objids_train)
-        X_test, y_test, labels_test, timesX_test, orig_lc_test, objids_test = augment_crop_lightcurves(X_test, y_test, labels_test, timesX_test, orig_lc_test, objids_test)
+        X_train, Xerr_train, y_train, labels_train, timesX_train, orig_lc_train, objids_train = augment_crop_lightcurves(X_train, Xerr_train, y_train, labels_train, timesX_train, orig_lc_train, objids_train)
+        X_test, Xerr_test, y_test, labels_test, timesX_test, orig_lc_test, objids_test = augment_crop_lightcurves(X_test, Xerr_test, y_test, labels_test, timesX_test, orig_lc_test, objids_test)
 
-        X_train, y_train, labels_train, timesX_train, orig_lc_train, objids_train = shuffle(X_train, y_train, labels_train, timesX_train, orig_lc_train, objids_train)
+        # #NORMALISE
+        if 'normalize' in kwargs.keys() and kwargs['normalize']:
+            X_train = X_train.copy()
+            Xerr_train = Xerr_train.copy()
+            X_test = X_test.copy()
+            Xerr_test = Xerr_test.copy()
+
+            def do_normalization(d, derr):
+                lc_norm = [[min(d[i, :, :].flatten()), max(d[i, :, :].flatten())] for i in range(len(d))]
+
+                for i in range(len(d)):
+                    wh = np.where((d[i, :, :] > 0.) | (d[i, :, :] < 0.))
+                    d[i, :, :][wh] =  (d[i, :, :][wh] - lc_norm[i][0]) / (lc_norm[i][1] - lc_norm[i][0])
+                    derr[i, :, :][wh] =  (derr[i, :, :][wh] - lc_norm[i][0]) / (lc_norm[i][1] - lc_norm[i][0])
+                return d, derr, lc_norm
+
+            X_train, Xerr_train, lc_norm_train = do_normalization(X_train, Xerr_train)
+            X_test, Xerr_test, lc_norm_test = do_normalization(X_test, Xerr_test)
+
+            # Save normalization factors for FFN
+            np.save(os.path.join(self.training_set_dir,
+                                 "normalize_train_{}ci{}_z{}_b{}_ig{}.npy".format(otherchange, self.contextual_info, self.zcut,
+                                                                                  self.bcut, self.ignore_classes)), lc_norm_train,
+                                 allow_pickle=True)
+            np.save(os.path.join(self.training_set_dir,
+                                 "normalize_test_{}ci{}_z{}_b{}_ig{}.npy".format(otherchange, self.contextual_info, self.zcut,
+                                                                                 self.bcut, self.ignore_classes)), lc_norm_test,
+                                 allow_pickle=True)
+
+            X_train, Xerr_train, y_train, labels_train, timesX_train, orig_lc_train, objids_train, lc_norm_train = shuffle(X_train, Xerr_train, y_train, labels_train, timesX_train, orig_lc_train, objids_train, lc_norm_train)
+        else:
+            X_train, Xerr_train, y_train, labels_train, timesX_train, orig_lc_train, objids_train = shuffle(X_train, Xerr_train, y_train, labels_train, timesX_train, orig_lc_train, objids_train)
 
         counts = np.unique(labels_train, return_counts=True)[-1]
         class_weights = max(counts) / counts
@@ -393,15 +432,24 @@ class PrepareTrainingSetArrays(PrepareArrays):
         for key, val in class_weights.items():
             sample_weights[l_train_indexes == key] = val
 
-        return X_train, X_test, y_train, y_test, labels_train, labels_test, classes, class_weights, \
-               sample_weights, timesX_train, timesX_test, orig_lc_train, orig_lc_test, objids_train, objids_test
+        if 'normalize' in kwargs.keys() and kwargs['normalize']:
+            return X_train, Xerr_train, X_test, Xerr_test, y_train, y_test, labels_train, labels_test, classes, class_weights, \
+                sample_weights, timesX_train, timesX_test, orig_lc_train, orig_lc_test, objids_train, objids_test, \
+                lc_norm_train, lc_norm_test
+        else:
+             return X_train, Xerr_train, X_test, Xerr_test, y_train, y_test, labels_train, labels_test, classes, class_weights, \
+                sample_weights, timesX_train, timesX_test, orig_lc_train, orig_lc_test, objids_train, objids_test
 
     def multi_read_obj(self, objids):
         nobjects = len(objids)
 
         labels = np.empty(shape=nobjects, dtype=object)
-        y = np.zeros(shape=(nobjects, self.nobs), dtype=object)
+        if self.single_class:
+            y = np.zeros(shape=(nobjects), dtype=object)
+        else:
+            y = np.zeros(shape=(nobjects, self.nobs), dtype=object)
         X = np.zeros(shape=(nobjects, self.nfeatures, self.nobs))
+        Xerr = np.zeros(shape=(nobjects, self.nfeatures, self.nobs))
         timesX = np.zeros(shape=(nobjects, self.nobs))
         objids_list = []
         orig_lc = []
@@ -428,20 +476,25 @@ class PrepareTrainingSetArrays(PrepareArrays):
             timesX[i][0:len_t] = tinterp
             orig_lc.append(data)
             objids_list.append(objid)
-            X = self.update_X(X, i, data, tinterp, len_t, objid, self.contextual_info, data.meta)
+            X, Xerr = self.update_X(X, Xerr, i, data, tinterp, len_t, objid,
+                                    self.contextual_info, data.meta, spline_interp=self.spline_interp)
 
             class_name = self.class_name_map[class_num]
-            activeindexes = (tinterp > t0)
+            activeindexes = (tinterp > t0) # I might turn this off
             labels[i] = class_name
-            y[i][0:len_t][activeindexes] = class_name
+            if self.single_class:
+                y[i] = class_name
+            else:
+                y[i][0:len_t][activeindexes] = class_name
 
         deleterows = np.array(deleterows)
         count_deleterows = len(deleterows)
         if count_deleterows > 0:
             X = np.delete(X, deleterows, axis=0)
+            Xerr = np.delete(Xerr, deleterows, axis=0)
             y = np.delete(y, deleterows, axis=0)
             labels = np.delete(labels, deleterows, axis=0)
             timesX = np.delete(timesX, deleterows, axis=0)
         num_objects = X.shape[0]
 
-        return labels, y, X, timesX, objids_list, orig_lc, count_deleterows, num_objects
+        return labels, y, X, Xerr, timesX, objids_list, orig_lc, count_deleterows, num_objects
