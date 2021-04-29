@@ -115,7 +115,11 @@ class InputLightCurve(object):
             calc_params = False
 
         if calc_params:
-            fit_func, parameters = model_early_lightcurve.fit_early_lightcurve(outlc, early_time)
+            try:
+               fit_func, parameters = model_early_lightcurve.fit_early_lightcurve(outlc, early_time)
+            except:
+                print("i threw an exception")
+                parameters = {pb: [-99, -99, -99] for pb in self.passband}
         else:
             parameters = {pb: [-99, -99, -99] for pb in self.passband}
 
@@ -144,10 +148,12 @@ class InputLightCurve(object):
 
         if self.training_set_parameters is not None:
             if self.calculate_t0 is not False:
-                t0 = self.compute_t0(outlc)
-                outlc.meta['t0'] = t0
+                print('calculating t0 for ', self.objid)
+                #t0 = self.compute_t0(outlc)
+                #outlc.meta['t0'] = t0
+                outlc.meta['t0'] = -20
             else:
-                outlc.meta['t0'] = self.trigger_mjd
+                outlc.meta['t0'] = self.peakmjd - self.trigger_mjd
             outlc.meta['peakmjd'] = self.peakmjd
             outlc.meta['class_num'] = self.class_number
 
