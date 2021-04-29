@@ -83,7 +83,7 @@ class PrepareArrays(object):
                 len_t = len(tinterp)
         return tinterp, len_t
 
-    def update_X(self, X, i, data, tinterp, len_t, objid, contextual_info, meta_data):
+    def update_X(self, X, Xerr, i, data, tinterp, len_t, objid, contextual_info, meta_data, spline_interp=True):
         for j, pb in enumerate(self.passbands):
             # Drop infinite or nan values in any row
             data.remove_rows(np.where(~np.isfinite(data['time']))[0])
@@ -106,6 +106,22 @@ class PrepareArrays(object):
 
             n = len(flux)  # Get vector length (could be less than nobs)
 
+            if not spline_interp:
+                n = -10
+                t = np.arange(self.mintime, self.maxtime, step=self.timestep)
+                for loc, (imin, imax) in enumerate(zip(t[:-1], t[1:])):
+                    imin, imax = int(imin), int(imax)
+                    wh, = np.where((time > imin) & (time < imax))
+                    if len(wh) < 1:
+                        continue
+                    elif len(wh) > 1:
+                        X[i][j][loc] = np.mean(flux[wh])
+                        Xerr[i][j][loc] = np.sqrt(np.sum(fluxerr[wh]**2))
+                    else:
+                        X[i][j][loc] = flux[wh]
+                        Xerr[i][j][loc] = fluxerr[wh]
+
+
             if n > 1:
                 # if flux[-1] > flux[-2]:  # If last values are increasing, then set fill_values to zero
                 #     f = interp1d(time, flux, kind='linear', bounds_error=False, fill_value=0.)
@@ -127,10 +143,11 @@ class PrepareArrays(object):
                         fluxerrinterp[interp_idx] = fluxerr[nearest_idx]
 
                 X[i][j][0:len_t] = fluxinterp
+                Xerr[i][j][0:len_t] = fluxerrinterp
                 # X[i][j * 2 + 1][0:len_t] = fluxerrinterp
 
         # Add contextual information
         for jj, c_info in enumerate(contextual_info, 1):
             X[i][j + jj][0:len_t] = meta_data[c_info] * np.ones(len_t)
 
-        return X
+        return X, Xerr
