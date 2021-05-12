@@ -24,7 +24,7 @@ class PrepareTrainingSetArrays(PrepareArrays):
                  save_dir='data/saved_light_curves/', get_data_func=None, augment_data=False, redo_processing=False,
                  spline_interp=True,
                  **kwargs):
-        PrepareArrays.__init__(self, passbands, contextual_info, nobs, mintime, maxtime, timestep)
+        PrepareArrays.__init__(self, passbands, contextual_info, nobs, mintime, maxtime, timestep, spline_interp=spline_interp)
         self.reread_data = reread_data
         self.redo_processing = redo_processing
         self.bcut = bcut
