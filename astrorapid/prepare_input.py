@@ -14,6 +14,7 @@ class PrepareInputArrays(PrepareArrays):
         nobjects = len(lightcurves)
 
         X = np.zeros(shape=(nobjects, self.nfeatures, self.nobs))
+        Xerr = np.zeros(shape=(nobjects, self.nfeatures, self.nobs))
         timesX = np.zeros(shape=(nobjects, self.nobs))
         objids_list = []
         orig_lc = []
@@ -38,7 +39,7 @@ class PrepareInputArrays(PrepareArrays):
             orig_lc.append(data)
             objids_list.append(objid)
             trigger_mjds.append(trigger_mjd)
-            X = self.update_X(X, i, data, tinterp, len_t, objid, self.contextual_info, data.meta, spline_interp=self.spline_interp)
+            X, Xerr = self.update_X(X, Xerr=Xerr, i=i, data=data, tinterp=tinterp, len_t=len_t, objid=objid, contextual_info=self.contextual_info, meta_data=data.meta, spline_interp=self.spline_interp)
 
         deleterows = np.array(deleterows)
         if len(deleterows) > 0:
