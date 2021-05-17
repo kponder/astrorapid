@@ -24,7 +24,8 @@ class PrepareTrainingSetArrays(PrepareArrays):
                  save_dir='data/saved_light_curves/', get_data_func=None, augment_data=False, redo_processing=False,
                  spline_interp=True,
                  **kwargs):
-        PrepareArrays.__init__(self, passbands, contextual_info, nobs, mintime, maxtime, timestep, spline_interp=spline_interp)
+        self.spline_interp = spline_interp
+        PrepareArrays.__init__(self, passbands, contextual_info, nobs, mintime, maxtime, timestep, spline_interp=self.spline_interp)
         self.reread_data = reread_data
         self.redo_processing = redo_processing
         self.bcut = bcut
@@ -38,7 +39,6 @@ class PrepareTrainingSetArrays(PrepareArrays):
         self.get_data_func = get_data_func
         self.augment_data = augment_data
         self.calculate_t0 = True
-        self.spline_interp = spline_interp
         if 'redshift' in contextual_info:
             self.known_redshift = True
         else:

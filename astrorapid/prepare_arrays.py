@@ -9,7 +9,7 @@ np.random.seed(42)
 
 class PrepareArrays(object):
     def __init__(self, passbands=('g', 'r'), contextual_info=('redshift',), nobs=50, mintime=-70, maxtime=80,
-                 timestep=3.0):
+                 timestep=3.0, spline_interp=True):
         self.passbands = passbands
         self.contextual_info = contextual_info
         self.npassbands = len(passbands)
@@ -18,6 +18,7 @@ class PrepareArrays(object):
         self.timestep = timestep
         self.mintime = mintime
         self.maxtime = maxtime
+        self.spline_interp = spline_interp
 
     def make_cuts(self, data, i, deleterows, b, redshift=None, class_num=None, bcut=True, zcut=0.5, ignore_classes=(),
                   pre_trigger=True):
@@ -83,7 +84,7 @@ class PrepareArrays(object):
                 len_t = len(tinterp)
         return tinterp, len_t
 
-    def update_X(self, X, Xerr, i, data, tinterp, len_t, objid, contextual_info, meta_data, spline_interp=True):
+    def update_X(self, X, Xerr, i, data, tinterp, len_t, objid, contextual_info, meta_data, spline_interp):
         for j, pb in enumerate(self.passbands):
             # Drop infinite or nan values in any row
             data.remove_rows(np.where(~np.isfinite(data['time']))[0])
