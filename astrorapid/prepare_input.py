@@ -5,7 +5,7 @@ from astrorapid.prepare_arrays import PrepareArrays
 class PrepareInputArrays(PrepareArrays):
     def __init__(self, passbands=('g', 'r'), contextual_info=('redshift',), bcut=True, zcut=None,
                  nobs=50, mintime=-70, maxtime=80, timestep=3.0, spline_interp=True):
-        PrepareArrays.__init__(self, passbands, contextual_info, nobs, mintime, maxtime, timestep)
+        PrepareArrays.__init__(self, passbands, contextual_info, nobs, mintime, maxtime, timestep, spline_interp)
         self.bcut = bcut
         self.zcut = zcut
         self.spline_interp = spline_interp
