@@ -386,6 +386,8 @@ class PrepareTrainingSetArrays(PrepareArrays):
         X_train, Xerr_train, y_train, labels_train, timesX_train, orig_lc_train, objids_train = augment_crop_lightcurves(X_train, Xerr_train, y_train, labels_train, timesX_train, orig_lc_train, objids_train)
         X_test, Xerr_test, y_test, labels_test, timesX_test, orig_lc_test, objids_test = augment_crop_lightcurves(X_test, Xerr_test, y_test, labels_test, timesX_test, orig_lc_test, objids_test)
 
+        X_train, Xerr_train, y_train, labels_train, timesX_train, orig_lc_train, objids_train = shuffle(X_train, Xerr_train, y_train, labels_train, timesX_train, orig_lc_train, objids_train)
+
         # #NORMALISE
         if 'normalize' in kwargs.keys() and kwargs['normalize']:
             X_train = X_train.copy()
@@ -414,10 +416,6 @@ class PrepareTrainingSetArrays(PrepareArrays):
                                  "normalize_test_{}ci{}_z{}_b{}_ig{}.npy".format(otherchange, self.contextual_info, self.zcut,
                                                                                  self.bcut, self.ignore_classes)), lc_norm_test,
                                  allow_pickle=True)
-
-            X_train, Xerr_train, y_train, labels_train, timesX_train, orig_lc_train, objids_train, lc_norm_train = shuffle(X_train, Xerr_train, y_train, labels_train, timesX_train, orig_lc_train, objids_train, lc_norm_train)
-        else:
-            X_train, Xerr_train, y_train, labels_train, timesX_train, orig_lc_train, objids_train = shuffle(X_train, Xerr_train, y_train, labels_train, timesX_train, orig_lc_train, objids_train)
 
         counts = np.unique(labels_train, return_counts=True)[-1]
         class_weights = max(counts) / counts
