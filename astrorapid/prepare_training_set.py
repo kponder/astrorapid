@@ -142,6 +142,134 @@ class PrepareTrainingSetArrays(PrepareArrays):
 
         return augmented_light_curves
 
+    def augment_data_with_pelican(self, light_curves, nsamples=100, trainobj=None):
+        """
+            Augment with PELICAN style sparse light curves.
+        """
+        if isinstance(nsamples, dict):
+            nsamples_is_dict = True
+        else:
+            nsamples_is_dict = False
+        augmented_light_curves = {}
+        lenobjids = len(light_curves)
+
+        for i, (objid, lc) in enumerate(light_curves.items()):
+            if trainobj is not None:
+                if objid not in trainobj:
+                    augmented_light_curves[f"{objid}"] = lc
+                    print(f"NOT Augmenting light curve {objid}, {i} of {lenobjids}")
+                    continue
+
+            print(f"Augmenting light curve {objid}, {i} of {lenobjids}")
+
+            if nsamples_is_dict:
+                cname = lc.meta['class_num']
+                ns = int(round(nsamples[cname]))
+            else:
+                ns = nsamples
+
+            new_lc = lc.copy()
+            augmented_light_curves[f"{objid}_0"] = new_lc
+
+            for s in range(1, ns):
+                for pb in self.passbands:
+                    pbmask = lc['passband'] == pb
+                    pbmaskidx = np.where(pbmask)[0]
+                    sortedidx = np.argsort(lc[pbmask]['time'].data)
+                    time = lc[pbmask]['time'].data[sortedidx]
+                    flux = lc[pbmask]['flux'].data[sortedidx]
+                    fluxerr = lc[pbmask]['fluxErr'].data[sortedidx]
+
+                    if len(time) == 0:
+                        continue
+                    # Get new times randomly in range of old times
+                    mintime, maxtime = min(time), max(time)
+
+                    new_times = (maxtime - mintime) * np.random.random(len(time)) + mintime
+                    new_times = sorted(new_times)
+
+                    new_fluxes = (flux + np.random.uniform(low=-60, high=60, size=len(flux))) * np.random.uniform(low=-60, high=60, size=len(flux))
+                    new_fluxerrs = np.sqrt(fluxerr**2 + np.random.uniform(low=0, high=60, size=len(fluxerr))**2)
+
+                    new_lc['time'][pbmaskidx] = new_times
+                    new_lc['flux'][pbmaskidx] = new_fluxes
+                    new_lc['fluxErr'][pbmaskidx] = new_fluxerrs
+                new_lc['photflag'] = 0
+                new_lc['photflag'][new_lc['time'] >= lc.meta['t0']] = 4096
+                augmented_light_curves[f"{objid}_{s}"] = new_lc
+
+        return augmented_light_curves
+
+    def augment_basic(self, light_curves, nsamples=100, trainobj=None):
+        """
+            Augment with Transformer chosen updates.
+            Something in between Peclian and Mike and Silogram
+            1. Make Sparse
+            2. Add Noise (Error + magnitude)
+            3. Time Translation
+            4. MAYBE: redshift auggies
+        """
+        if isinstance(nsamples, dict):
+            nsamples_is_dict = True
+        else:
+            nsamples_is_dict = False
+        augmented_light_curves = {}
+        lenobjids = len(light_curves)
+
+        for i, (objid, lc) in enumerate(light_curves.items()):
+            if trainobj is not None:
+                if objid not in trainobj:
+                    augmented_light_curves[f"{objid}"] = lc
+                    print(f"NOT Augmenting light curve {objid}, {i} of {lenobjids}")
+                    continue
+
+            print(f"Augmenting light curve {objid}, {i} of {lenobjids}")
+
+            if nsamples_is_dict:
+                cname = lc.meta['class_num']
+                ns = int(round(nsamples[cname]))
+            else:
+                ns = nsamples
+
+            new_lc = lc.copy()
+            augmented_light_curves[f"{objid}_0"] = new_lc
+
+            for s in range(1, ns):
+                for pb in self.passbands:
+                    pbmask = lc['passband'] == pb
+                    pbmaskidx = np.where(pbmask)[0]
+                    sortedidx = np.argsort(lc[pbmask]['time'].data)
+                    time = lc[pbmask]['time'].data[sortedidx]
+                    flux = lc[pbmask]['flux'].data[sortedidx]
+                    fluxerr = lc[pbmask]['fluxErr'].data[sortedidx]
+
+                    if len(time) == 0:
+                        continue
+                    # Get new times randomly in range of old times
+                    mintime, maxtime = min(time), max(time)
+
+                    new_times = (maxtime - mintime) * np.random.random(len(time)) + mintime
+                    new_times = sorted(new_times)
+
+                    new_fluxes = np.random.normal(flux, fluxerr*2./3.)
+                    #(flux + np.random.uniform(low=-60, high=60, size=len(flux))) * np.random.uniform(low=-60, high=60, size=len(flux))
+                    new_fluxerrs = np.sqrt(fluxerr**2 + np.random.uniform(low=0, high=60, size=len(fluxerr))**2)
+
+                    new_lc['time'][pbmaskidx] = new_times
+                    new_lc['flux'][pbmaskidx] = new_fluxes
+                    new_lc['fluxErr'][pbmaskidx] = new_fluxerrs
+                new_lc['photflag'] = 0
+                new_lc['photflag'][new_lc['time'] >= lc.meta['t0']] = 4096
+                augmented_light_curves[f"{objid}_{s}"] = new_lc
+
+        return augmented_light_curves
+
+    def update_augmented_objid(self, obj_list, nsamples=100):
+        updated_obj_list = []
+        for obj in obj_list:
+            for i in nsamples:
+                updated_obj_list.append(f"{obj}_{i}")
+        return updated_obj_list
 
     def prepare_training_set_arrays(self, otherchange='', class_nums=(1,), nprocesses=1, train_size=0.6, **kwargs):
         savepath = os.path.join(self.training_set_dir,
@@ -384,8 +512,7 @@ class PrepareTrainingSetArrays(PrepareArrays):
             return X_local, Xerr_local, y_local, labels_local, timesX_local, orig_lc_local, objids_local
 
         X_train, Xerr_train, y_train, labels_train, timesX_train, orig_lc_train, objids_train = augment_crop_lightcurves(X_train, Xerr_train, y_train, labels_train, timesX_train, orig_lc_train, objids_train)
-        X_test, Xerr_test, y_test, labels_test, timesX_test, orig_lc_test, objids_test = augment_crop_lightcurves(X_test, Xerr_test, y_test, labels_test, timesX_test, orig_lc_test, objids_test)
-
+        
         X_train, Xerr_train, y_train, labels_train, timesX_train, orig_lc_train, objids_train = shuffle(X_train, Xerr_train, y_train, labels_train, timesX_train, orig_lc_train, objids_train)
 
         # #NORMALISE
